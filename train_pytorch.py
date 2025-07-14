@@ -3,63 +3,58 @@ import torch.nn as nn
 import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
+from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
 import json
 import os
 
+# ✅ Paramètres
 batch_size = 32
 num_epochs = 5
 learning_rate = 0.001
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-transform = transforms.Compose([
-    transforms.Resize((100, 100)),
-    transforms.RandomHorizontalFlip(),
-    transforms.RandomRotation(20),
-    transforms.ToTensor(),
-    transforms.Normalize([0.5]*3, [0.5]*3)
-])
+print(f"🖥️ Appareil utilisé : {device}")
 
-dataset = datasets.ImageFolder(root='Fruit_Dataset', transform=transform)
+# ✅ Charger les transformations recommandées
+weights = EfficientNet_B0_Weights.DEFAULT
+transform = weights.transforms()
+
+# ✅ Charger le dataset
+dataset_path = 'Fruit_Dataset'
+
+if not os.path.exists(dataset_path):
+    print(f"❌ Le dossier '{dataset_path}' n'existe pas !")
+    exit()
+
+dataset = datasets.ImageFolder(root=dataset_path, transform=transform)
 data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-# حفظ أسماء الفئات في ملف JSON باش تولي متاحة ف predict
+# ✅ Affichage de diagnostic
+print(f"📊 Nombre de classes : {len(dataset.classes)}")
+print(f"📸 Nombre total d'images : {len(dataset)}")
+print("📂 Classes :", dataset.classes)
+
+if len(dataset) == 0:
+    print("❌ Aucune image trouvée. Vérifie le contenu de 'Fruit_Dataset'.")
+    exit()
+
+# 💾 Sauvegarder les classes
 with open('classes.json', 'w') as f:
     json.dump(dataset.classes, f)
+print("💾 Fichier classes.json enregistré.")
 
-class SimpleCNN(nn.Module):
-    def __init__(self, num_classes):
-        super(SimpleCNN, self).__init__()
-        self.conv1 = nn.Conv2d(3, 32, 3)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(32, 64, 3)
-        self.dropout = nn.Dropout(0.5)
-        self.flatten = nn.Flatten()
-        self._init_flattened_size()
-        self.fc1 = nn.Linear(self.flattened_size, 128)
-        self.fc2 = nn.Linear(128, num_classes)
+# 🧠 Charger le modèle EfficientNet
+model = efficientnet_b0(weights=weights)
+num_features = model.classifier[1].in_features
+model.classifier[1] = nn.Linear(num_features, len(dataset.classes))
+model = model.to(device)
 
-    def _init_flattened_size(self):
-        with torch.no_grad():
-            dummy_input = torch.zeros(1, 3, 100, 100)
-            x = self.pool(torch.relu(self.conv1(dummy_input)))
-            x = self.pool(torch.relu(self.conv2(x)))
-            self.flattened_size = x.view(1, -1).size(1)
-
-    def forward(self, x):
-        x = self.pool(torch.relu(self.conv1(x)))
-        x = self.pool(torch.relu(self.conv2(x)))
-        x = self.flatten(x)
-        x = torch.relu(self.fc1(x))
-        x = self.dropout(x)
-        x = self.fc2(x)
-        return x
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-num_classes = len(dataset.classes)
-model = SimpleCNN(num_classes).to(device)
-
+# ⚙️ Fonction de coût et optimiseur
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
+# 🔁 Entraînement
+print("🚀 Début de l'entraînement...")
 for epoch in range(num_epochs):
     model.train()
     running_loss = 0.0
@@ -76,12 +71,12 @@ for epoch in range(num_epochs):
 
         running_loss += loss.item() * inputs.size(0)
         _, preds = torch.max(outputs, 1)
-        running_corrects += torch.sum(preds == labels.data)
+        running_corrects += torch.sum(preds == labels)
 
     epoch_loss = running_loss / len(dataset)
     epoch_acc = running_corrects.double() / len(dataset)
+    print(f"📈 Epoch {epoch+1}/{num_epochs} - Loss: {epoch_loss:.4f} - Accuracy: {epoch_acc:.4f}")
 
-    print(f"Epoch {epoch+1}/{num_epochs} - Loss: {epoch_loss:.4f} - Accuracy: {epoch_acc:.4f}")
-
-torch.save(model.state_dict(), 'fruit_classifier_model.pt')
-print("✅ Model trained and saved as fruit_classifier_model.pt")
+# 💾 Sauvegarde du modèle
+torch.save(model.state_dict(), 'efficientnet_fruit_model.pt')
+print("✅ Modèle entraîné et sauvegardé sous le nom efficientnet_fruit_model.pt")

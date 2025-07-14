@@ -1,85 +1,67 @@
 import cv2
 import torch
-import torch.nn.functional as F
-from torchvision import transforms
-from PIL import Image
-import os
 import torch.nn as nn
+from torchvision import transforms
+from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
+import json
+from PIL import Image
 
-# موديل SimpleCNN (بحال ديالك)
-class SimpleCNN(nn.Module):
-    def __init__(self, num_classes=8):
-        super(SimpleCNN, self).__init__()
-        self.conv1 = nn.Conv2d(3, 32, 3)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(32, 64, 3)
-        self.dropout = nn.Dropout(0.5)
-        self.flatten = nn.Flatten()
-        self._init_flattened_size()
-        self.fc1 = nn.Linear(self.flattened_size, 128)
-        self.fc2 = nn.Linear(128, num_classes)
+# 📦 Charger les classes
+with open('classes.json', 'r') as f:
+    class_names = json.load(f)
 
-    def _init_flattened_size(self):
-        with torch.no_grad():
-            dummy_input = torch.zeros(1, 3, 100, 100)
-            x = self.pool(torch.relu(self.conv1(dummy_input)))
-            x = self.pool(torch.relu(self.conv2(x)))
-            self.flattened_size = x.view(1, -1).size(1)
-
-    def forward(self, x):
-        x = self.pool(torch.relu(self.conv1(x)))
-        x = self.pool(torch.relu(self.conv2(x)))
-        x = self.flatten(x)
-        x = torch.relu(self.fc1(x))
-        x = self.dropout(x)
-        x = self.fc2(x)
-        return x
-
+# 📱 Détection de device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+weights = EfficientNet_B0_Weights.DEFAULT
 
-# تحميل الموديل
-num_classes = len(os.listdir("Fruit_Dataset"))  # تأكد أن هذا المسار صحيح ويحتوي على فولدرات الفواكه
-model = SimpleCNN(num_classes).to(device)
-model.load_state_dict(torch.load('fruit_classifier_model.pt', map_location=device))
+# 🧠 Charger le modèle pré-entraîné + adapter pour nos classes
+model = efficientnet_b0(weights=weights)
+num_features = model.classifier[1].in_features
+model.classifier[1] = nn.Linear(num_features, len(class_names))
+model.load_state_dict(torch.load('efficientnet_fruit_model.pt', map_location=device))
+model = model.to(device)
 model.eval()
 
-# تحويل الصورة للتحضير للتصنيف
-transform = transforms.Compose([
-    transforms.ToPILImage(),
-    transforms.Resize((100, 100)),
-    transforms.ToTensor(),
-    transforms.Normalize([0.5]*3, [0.5]*3)
-])
+# 📐 Transformation de l’image
+transform = weights.transforms()
 
-# أسماء الفواكه (مجلدات داخل Fruit_Dataset)
-class_names = sorted(os.listdir("Fruit_Dataset"))
+# 📷 Capture webcam (avec backend DirectShow)
+cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+if not cap.isOpened():
+    print("❌ Impossible d'accéder à la webcam.")
+    exit()
 
-cap = cv2.VideoCapture(0)  # تفعيل الكاميرا
+print("🎥 Webcam démarrée. Appuie sur 'q' pour quitter.")
 
 while True:
     ret, frame = cap.read()
     if not ret:
+        print("⚠️ Échec de la lecture vidéo.")
         break
 
-    # قطع مربع وسط الشاشة باش تصنف فقط هاديك المنطقة (يمكن تعديل الإحداثيات)
-    x_start, y_start = 100, 100
-    x_end, y_end = 380, 380
-    crop = frame[y_start:y_end, x_start:x_end]
+    # Zone centrale de l'image
+    h, w, _ = frame.shape
+    size = min(h, w) // 2
+    x1 = w//2 - size//2
+    y1 = h//2 - size//2
+    crop = frame[y1:y1+size, x1:x1+size]
 
-    img_tensor = transform(crop).unsqueeze(0).to(device)
+    # Préparer l’image
+    img_pil = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+    img_tensor = transform(img_pil).unsqueeze(0).to(device)
 
+    # 🔍 Prédiction
     with torch.no_grad():
         outputs = model(img_tensor)
-        probs = F.softmax(outputs, dim=1)
+        probs = torch.nn.functional.softmax(outputs, dim=1)
         conf, pred = torch.max(probs, 1)
         label = class_names[pred.item()] if conf.item() > 0.5 else "غير واضح"
 
-    # عرض النتيجة على الشاشة مع رسم مربع على منطقة القص
-    cv2.putText(frame, f"Prediction: {label}", (50, 50),
+    # 🖼️ Affichage
+    cv2.putText(frame, f"{label} ({conf.item()*100:.1f}%)", (20, 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-    cv2.rectangle(frame, (x_start, y_start), (x_end, y_end), (255, 0, 0), 2)
-
-    cv2.imshow('Fruit Recognition - Press q to quit', frame)
+    cv2.rectangle(frame, (x1, y1), (x1+size, y1+size), (255, 0, 0), 2)
+    cv2.imshow("📸 Prédiction Fruit - Appuie sur q pour quitter", frame)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
